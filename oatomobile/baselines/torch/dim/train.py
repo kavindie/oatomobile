@@ -15,6 +15,10 @@
 """Trains the deep imitative model on expert demostrations."""
 
 import os
+import argparse
+from torch.utils.data import DataLoader
+from flomo.utils_CARLA.datasetCARLA_flomo_new import MultiMyDataset
+
 from typing import Mapping
 
 import torch
@@ -35,68 +39,76 @@ from oatomobile.torch.savers import Checkpointer
 
 logging.set_verbosity(logging.DEBUG)
 FLAGS = flags.FLAGS
-flags.DEFINE_string(
-    name="dataset_dir",
-    default=None,
-    help="The full path to the processed dataset.",
-)
-flags.DEFINE_string(
-    name="output_dir",
-    default=None,
-    help="The full path to the output directory (for logs, ckpts).",
-)
-flags.DEFINE_integer(
-    name="batch_size",
-    default=512,
-    help="The batch size used for training the neural network.",
-)
-flags.DEFINE_integer(
-    name="num_epochs",
-    default=None,
-    help="The number of training epochs for the neural network.",
-)
-flags.DEFINE_integer(
-    name="save_model_frequency",
-    default=4,
-    help="The number epochs between saves of the model.",
-)
-flags.DEFINE_float(
-    name="learning_rate",
-    default=1e-3,
-    help="The ADAM learning rate.",
-)
-flags.DEFINE_integer(
-    name="num_timesteps_to_keep",
-    default=4,
-    help="The numbers of time-steps to keep from the target, with downsampling.",
-)
-flags.DEFINE_float(
-    name="weight_decay",
-    default=0.0,
-    help="The L2 penalty (regularization) coefficient.",
-)
-flags.DEFINE_bool(
-    name="clip_gradients",
-    default=False,
-    help="If True it clips the gradients norm to 1.0.",
-)
 
+class Config:
+    # training
+    lr = 0.001
+    epochs = 150
+    batch_size = 128
+    val_split = 0.1
+    sH = 480
+    sW = 640
 
-def main(argv):
-  # Debugging purposes.
-  logging.debug(argv)
-  logging.debug(FLAGS)
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    else:
+        device = torch.device('cpu')
 
+    patience = 5
+
+    condition = None
+
+    # flag for utility functions
+    rel_coords = True
+    noise = True
+    norm_rotation = True
+    global_rotation = False
+
+    # model values
+    alpha = 0.6
+    beta = 0.02
+    gamma = 0.002
+
+    # testing
+    num_plots = 100
+    num_samples = 20
+
+    # dataset
+    dataset_dir = '../udmt/CARLA_Data/OutputData'
+    csv_file = 'newdata_unique_capped.csv'
+    sequence_length = 16  # original 20
+    min_sequence_length = 10
+    observed_history = 8
+    pred_steps = sequence_length - observed_history
+
+def parse_commandline():
+    parser = argparse.ArgumentParser(description='Run training motion prediction network.')
+    parser.add_argument('--dataset_dir', type=str, default='/home/kavindie/Documents/Research_UTS/Python_in_ML/udmt/CARLA_Data/OutputData/Second/newdata_unique_capped.csv', help='Directory to the dataset')
+    parser.add_argument('--output_dir', type=str, default='./test1', help='The full path to the output directory (for logs, ckpts).')
+    parser.add_argument('--batch_size', type=int, default=2, help="The batch size used for training the neural network.")
+    parser.add_argument('--num_epochs', type=int, default=150, help="The number of training epochs for the neural network.")
+    parser.add_argument('--save_model_frequency', type=int, default=4, help="The number epochs between saves of the model.")
+    parser.add_argument('--learning_rate', type=float, default=1e-3, help="The ADAM learning rate")
+    parser.add_argument('--weight_decay', type=float, default=0.0, help="The L2 penalty (regularization) coefficient.")
+    parser.add_argument('--clip_gradients', default=False, help="If True it clips the gradients norm to 1.0.")
+    parser.add_argument('--num_timesteps_to_keep', type=int, default=8, help="The numbers of time-steps to keep from the target, with downsampling.")
+    args = parser.parse_args()
+    Config.batch_size = args.batch_size
+    Config.epochs = args.num_epochs
+    return args
+
+def main():
+  args = parse_commandline()
   # Parses command line arguments.
-  dataset_dir = FLAGS.dataset_dir
-  output_dir = FLAGS.output_dir
-  batch_size = FLAGS.batch_size
-  num_epochs = FLAGS.num_epochs
-  learning_rate = FLAGS.learning_rate
-  save_model_frequency = FLAGS.save_model_frequency
-  num_timesteps_to_keep = FLAGS.num_timesteps_to_keep
-  weight_decay = FLAGS.weight_decay
-  clip_gradients = FLAGS.clip_gradients
+  dataset_dir = args.dataset_dir
+  output_dir = args.output_dir
+  batch_size = args.batch_size
+  num_epochs = args.num_epochs
+  learning_rate = args.learning_rate
+  save_model_frequency = args.save_model_frequency
+  num_timesteps_to_keep = args.num_timesteps_to_keep
+  weight_decay = args.weight_decay
+  clip_gradients = args.clip_gradients
   noise_level = 1e-2
 
   # Determines device, accelerator.
@@ -143,25 +155,25 @@ def main(argv):
       "player_future",
       "velocity",
   )
-  dataset_train = CARLADataset.as_torch(
-      dataset_dir=os.path.join(dataset_dir, "train"),
-      modalities=modalities,
+
+  # My additions
+  data_train = ["Third", "Sixth", "Fourth", "Fifth"]
+  data_val = ["First"]
+  data_test = ["Second"]
+
+  dataloader_train = DataLoader(
+      MultiMyDataset(data_train, Config, operation='train', FloMo_train=False),
+      batch_size=Config.batch_size, shuffle=True, num_workers=0, generator=torch.default_generator
   )
-  dataloader_train = torch.utils.data.DataLoader(
-      dataset_train,
-      batch_size=batch_size,
-      shuffle=True,
-      num_workers=50,
+
+  dataloader_val = DataLoader(
+      MultiMyDataset(data_val, Config, operation='validate', FloMo_train=False),
+      batch_size=Config.batch_size, shuffle=False, num_workers=0, generator=torch.default_generator
   )
-  dataset_val = CARLADataset.as_torch(
-      dataset_dir=os.path.join(dataset_dir, "val"),
-      modalities=modalities,
-  )
-  dataloader_val = torch.utils.data.DataLoader(
-      dataset_val,
-      batch_size=batch_size * 5,
-      shuffle=True,
-      num_workers=50,
+
+  dataloader_test = DataLoader(
+      MultiMyDataset(data_test, Config, operation='test', FloMo_train=False),
+      batch_size=1, shuffle=False, num_workers=0, generator=torch.default_generator
   )
 
   # Theoretical limit of NLL.
