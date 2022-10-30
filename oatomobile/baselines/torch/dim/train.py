@@ -16,6 +16,8 @@
 
 import os
 import argparse
+
+import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from flomo.utils_CARLA.datasetCARLA_flomo_new import MultiMyDataset
 
@@ -84,10 +86,10 @@ class Config:
 def parse_commandline():
     parser = argparse.ArgumentParser(description='Run training motion prediction network.')
     parser.add_argument('--dataset_dir', type=str, default='/home/kavindie/Documents/Research_UTS/Python_in_ML/udmt/CARLA_Data/OutputData/Second/newdata_unique_capped.csv', help='Directory to the dataset')
-    parser.add_argument('--output_dir', type=str, default='./test1', help='The full path to the output directory (for logs, ckpts).')
-    parser.add_argument('--batch_size', type=int, default=2, help="The batch size used for training the neural network.")
+    parser.add_argument('--output_dir', type=str, default='./oatomobile/baselines/torch/dim/test1', help='The full path to the output directory (for logs, ckpts).')
+    parser.add_argument('--batch_size', type=int, default=16, help="The batch size used for training the neural network.")
     parser.add_argument('--num_epochs', type=int, default=150, help="The number of training epochs for the neural network.")
-    parser.add_argument('--save_model_frequency', type=int, default=4, help="The number epochs between saves of the model.")
+    parser.add_argument('--save_model_frequency', type=int, default=20, help="The number epochs between saves of the model.")
     parser.add_argument('--learning_rate', type=float, default=1e-3, help="The ADAM learning rate")
     parser.add_argument('--weight_decay', type=float, default=0.0, help="The L2 penalty (regularization) coefficient.")
     parser.add_argument('--clip_gradients', default=False, help="If True it clips the gradients norm to 1.0.")
@@ -99,6 +101,7 @@ def parse_commandline():
 
 def main():
   args = parse_commandline()
+  logging.debug(args)
   # Parses command line arguments.
   dataset_dir = args.dataset_dir
   output_dir = args.output_dir
@@ -201,23 +204,23 @@ def main():
 
     traj_out = batch['traj_out_rotated_glob']  # batch['traj_in_rotated']
     traj_out = traj_out[batch['mask'].bool()]
-    traj_out_end = traj_out
     # Perturb target.
     y = torch.normal(  # pylint: disable=no-member
-        mean=traj_out_end[..., :2],
-        std=torch.ones_like(traj_out_end[..., :2]) * noise_level,  # pylint: disable=no-member
+        mean=traj_out[..., :2],
+        std=torch.ones_like(traj_out[..., :2]) * noise_level,  # pylint: disable=no-member
     )
 
     # Forward pass from the model.
     visual_features = batch['image_resNet+grid']
+    visual_features = visual_features[[batch['mask'].bool()]]
     traj_in = batch['traj_in_rotated_glob']  # batch['traj_in_rotated']
-    traj_in = traj_out[batch['mask'].bool()]
+    traj_in = traj_in[batch['mask'].bool()]
     traj_in = traj_in[:, 1:] - traj_in[:, :-1]
     z = model._params(
         velocity=traj_in,
         visual_features=visual_features,
         # is_at_traffic_light=batch['action_gt'],
-        traffic_light_state=batch['action_gt'],
+        traffic_light_state=batch['action_gt'][[batch['mask'].bool()]],
     )
     # # Perturb target.
     # y = torch.normal(  # pylint: disable=no-member
@@ -257,12 +260,16 @@ def main():
     """Performs an epoch of gradient descent optimization on `dataloader`."""
     model.train()
     loss = 0.0
+    tt = 0
     with tqdm.tqdm(dataloader) as pbar:
       for batch in pbar:
         # Prepares the batch.
         batch = transform(batch)
         # Performs a gradien-descent step.
         loss += train_step(model, optimizer, batch, clip=clip_gradients)
+        tt += 1
+        if tt == 20:
+            return loss/20
     return loss / len(dataloader)
 
   def evaluate_step(
@@ -271,14 +278,22 @@ def main():
   ) -> torch.Tensor:
     """Evaluates `model` on a `batch`."""
     # Forward pass from the model.
+    visual_features = batch['image_resNet+grid']
+    visual_features = visual_features[[batch['mask'].bool()]]
+    traj_in = batch['traj_in_rotated_glob']  # batch['traj_in_rotated']
+    traj_in = traj_in[batch['mask'].bool()]
+    traj_in = traj_in[:, 1:] - traj_in[:, :-1]
     z = model._params(
-        velocity=batch["velocity"],
-        visual_features=batch["visual_features"],
-        is_at_traffic_light=batch["is_at_traffic_light"],
-        traffic_light_state=batch["traffic_light_state"],
+        velocity=traj_in,
+        visual_features=visual_features,
+        # is_at_traffic_light=batch["is_at_traffic_light"],
+        traffic_light_state=batch['action_gt'][[batch['mask'].bool()]],
     )
+
+    traj_out = batch['traj_out_rotated_glob']  # batch['traj_in_rotated']
+    traj_out = traj_out[batch['mask'].bool()]
     _, log_prob, logabsdet = model._decoder._inverse(
-        y=batch["player_future"][..., :2],
+        y=traj_out[..., :2],
         z=z,
     )
 
@@ -294,6 +309,7 @@ def main():
     """Performs an evaluation of the `model` on the `dataloader."""
     model.eval()
     loss = 0.0
+    tt = 0
     with tqdm.tqdm(dataloader) as pbar:
       for batch in pbar:
         # Prepares the batch.
@@ -301,6 +317,9 @@ def main():
         # Accumulates loss in dataset.
         with torch.no_grad():
           loss += evaluate_step(model, batch)
+        tt +=1
+        if tt == 20:
+            return loss/20
     return loss / len(dataloader)
 
   def write(
@@ -313,28 +332,41 @@ def main():
   ) -> None:
     """Visualises model performance on `TensorBoard`."""
     # Gets a sample from the dataset.
-    batch = next(iter(dataloader))
-    # Prepares the batch.
-    batch = transform(batch)
-    # Turns off gradients for model parameters.
-    for params in model.parameters():
-      params.requires_grad = False
-    # Generates predictions.
-    predictions = model(num_steps=20, **batch)
-    # Turns on gradients for model parameters.
-    for params in model.parameters():
-      params.requires_grad = True
-    # Logs on `TensorBoard`.
-    writer.log(
-        split=split,
-        loss=loss.detach().cpu().numpy().item(),
-        overhead_features=batch["visual_features"].detach().cpu().numpy()[:8],
-        predictions=predictions.detach().cpu().numpy()[:8],
-        ground_truth=batch["player_future"].detach().cpu().numpy()[:8],
-        global_step=epoch,
-    )
+    for batch in dataloader:
+        # Prepares the batch.
+        batch = transform(batch)
+        # Turns off gradients for model parameters.
+        for params in model.parameters():
+          params.requires_grad = False
+        # Generates predictions.
+        goal = batch['visible_last_point_xy_traverse_rot_globally'][batch['mask'].bool()]
+        goal = goal[:, None, :]
+        predictions = model(num_steps=20,goal=goal, **batch)
+        # Turns on gradients for model parameters.
+        for params in model.parameters():
+          params.requires_grad = True
+        # Logs on `TensorBoard`.
+        gt  = batch['traj_out_rotated_glob']  # batch['traj_in_rotated']
+        gt = gt[batch['mask'].bool()]
+        vf = batch['image_resNet+grid'][batch['mask'].bool()]
+        traj_in = batch['traj_in_rotated_glob'][batch['mask'].bool()]
+        predictions = predictions+traj_in
+
+        writer.log(
+            split=split,
+            loss=loss.detach().cpu().numpy().item(),
+            overhead_features=vf.detach().cpu().numpy()[:8],
+            predictions=predictions.detach().cpu().numpy()[:8],
+            ground_truth=gt.detach().cpu().numpy()[:8],
+            input_traj=traj_in.detach().cpu().numpy()[:8],
+            global_step=epoch,
+        )
+        break
 
   with tqdm.tqdm(range(num_epochs)) as pbar_epoch:
+    loss_best = torch.inf
+    # fig_losses, axes_losses = plt.subplots(1,2)
+    # iter = 0
     for epoch in pbar_epoch:
       # Trains model on whole training dataset, and writes on `TensorBoard`.
       loss_train = train_epoch(model, optimizer, dataloader_train)
@@ -343,6 +375,13 @@ def main():
       # Evaluates model on whole validation dataset, and writes on `TensorBoard`.
       loss_val = evaluate_epoch(model, dataloader_val)
       write(model, dataloader_val, writer, "val", loss_val, epoch)
+
+      # axes_losses[0].plot(iter, loss_train.detach().cpu().numpy().item())
+      # axes_losses[0].plot(iter, loss_train.detach().cpu().numpy().item())
+      # iter += 1
+      if loss_val < loss_best:
+          loss_best = loss_val
+          checkpointer.save(epoch)
 
       # Checkpoints model weights.
       if epoch % save_model_frequency == 0:
@@ -355,6 +394,9 @@ def main():
               loss_val.detach().cpu().numpy().item(),
               nll_limit,
           ))
+    # axes_losses.axis('equal')
+    # plt.savefig(f'./{epoch}.png')
+    # plt.close(fig_losses)
 
 
 if __name__ == "__main__":

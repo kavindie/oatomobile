@@ -59,6 +59,7 @@ class TensorBoardLogger:
       global_step: int,
       overhead_features: Optional[types.Array] = None,
       predictions: Optional[types.Array] = None,
+      input_traj: Optional[types.Array] = None,
       ground_truth: Optional[types.Array] = None,
   ) -> None:
     """Logs the scalar loss and visualizes predictions for qualitative
@@ -87,43 +88,55 @@ class TensorBoardLogger:
           o_t,
           p_t,
           g_t,
+          h_t,
       ) in enumerate(zip(
           overhead_features,
           predictions,
           ground_truth,
+          input_traj,
       )):
-        fig, ax = plt.subplots(figsize=(3.0, 3.0))
+        fig, ax = plt.subplots(1,2,figsize=(3.0, 3.0))
         bev_meters = 25.0
         # Overhead features.
-        ax.imshow(
+        ax[0].imshow(
             o_t.squeeze()[..., 0],
             extent=(-bev_meters, bev_meters, bev_meters, -bev_meters),
             cmap="gray",
         )
         # Ground truth.
-        ax.plot(
+        ax[1].plot(
+            g_t[..., 0],
             g_t[..., 1],
-            -g_t[..., 0],
             marker="o",
             markersize=4,
-            color=COLORS[1],
+            color='g',
             alpha=1.0,
             label="ground truth",
         )
         # Model prediction.
-        ax.plot(
+        ax[1].plot(
+            p_t[..., 0],
             p_t[..., 1],
-            -p_t[..., 0],
             marker="o",
             markersize=4,
-            color=COLORS[0],
+            color='b',
             alpha=0.75,
             label="predictions",
         )
-        ax.legend()
-        ax.set(frame_on=False)
-        ax.get_xaxis().set_visible(False)
-        ax.get_yaxis().set_visible(False)
+        ax[1].plot(
+            h_t[..., 0],
+            h_t[..., 1],
+            marker="o",
+            markersize=4,
+            color='r',
+            alpha=0.75,
+            label="history",
+        )
+
+        for a in ax:
+            a.set(frame_on=False)
+            a.get_xaxis().set_visible(False)
+            a.get_yaxis().set_visible(False)
         # Convert `matplotlib` canvas to `NumPy` RGB.
         fig.canvas.draw()
         w, h = fig.canvas.get_width_height()

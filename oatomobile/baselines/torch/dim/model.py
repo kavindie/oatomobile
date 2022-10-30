@@ -94,9 +94,14 @@ class ImitativeModel(nn.Module):
     Returns:
       A mode from the posterior, with shape `[D, 2]`.
     """
-    if not "visual_features" in context:
-      raise ValueError("Missing `visual_features` keyword argument.")
-    batch_size = context["visual_features"].shape[0]
+    batch_size = context['image_resNet+grid'].shape[0]
+    visual_features = context['image_resNet+grid'][context['mask'].bool()]
+    traj_in = context['traj_in_rotated_glob']  # batch['traj_in_rotated']
+    traj_in = traj_in[context['mask'].bool()]
+    traj_in = traj_in[:, 1:] - traj_in[:, :-1]
+    context['velocity']=traj_in
+    context['visual_features']=visual_features
+    context['traffic_light_state']=context['action_gt'][context['mask'].bool()]
 
     # Sets initial sample to base distribution's mean.
     x = self._decoder._base_dist.sample().clone().detach().repeat(
