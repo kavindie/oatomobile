@@ -32,6 +32,7 @@ from oatomobile.torch.networks.mlp import MLP
 from oatomobile.torch.networks.perception import MobileNetV2
 from oatomobile.torch.networks.sequence import AutoregressiveFlow
 
+from flomo.HeatMap.UNetMod import RNNMod
 
 class ImitativeModel(nn.Module):
   """A `PyTorch` implementation of an imitative model."""
@@ -50,11 +51,12 @@ class ImitativeModel(nn.Module):
     self._output_shape = output_shape
 
     # The convolutional encoder model.
-    self._encoder = MobileNetV2(num_classes=128, in_channels=2)
+    self._encoder = MobileNetV2(num_classes=128, in_channels=5)
+    self._past_encoder = RNNMod(nin=2, nout=4, es=16, hs=16, nl=3, device=0)
 
     # Merges the encoded features and the vector inputs.
     self._merger = MLP(
-        input_size=128 + 3 + 1 + 1,
+        input_size=128 + 4 + 2,
         output_sizes=[64, 64, 64],
         activation_fn=nn.ReLU,
         dropout_rate=None,
@@ -190,24 +192,24 @@ class ImitativeModel(nn.Module):
       raise ValueError("Missing `visual_features` keyword argument.")
     if not "velocity" in context:
       raise ValueError("Missing `velocity` keyword argument.")
-    if not "is_at_traffic_light" in context:
-      raise ValueError("Missing `is_at_traffic_light` keyword argument.")
+    # if not "is_at_traffic_light" in context:
+    #   raise ValueError("Missing `is_at_traffic_light` keyword argument.")
     if not "traffic_light_state" in context:
       raise ValueError("Missing `traffic_light_state` keyword argument.")
     visual_features = context.get("visual_features")
     velocity = context.get("velocity")
-    is_at_traffic_light = context.get("is_at_traffic_light")
+    # is_at_traffic_light = context.get("is_at_traffic_light")
     traffic_light_state = context.get("traffic_light_state")
 
     # Encodes the visual input.
     visual_features = self._encoder(visual_features)
-
+    past_traj, hidden = self._past_encoder(velocity)
+    past_traj = past_traj[:, -1]
     # Merges visual input logits and vector inputs.
     visual_features = torch.cat(  # pylint: disable=no-member
         tensors=[
             visual_features,
-            velocity,
-            is_at_traffic_light,
+            past_traj,
             traffic_light_state,
         ],
         dim=-1,

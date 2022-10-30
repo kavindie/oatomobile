@@ -182,19 +182,44 @@ def main(argv):
     # Resets optimizer's gradients.
     optimizer.zero_grad()
 
+    #Adding my stuff
+    batch_size = Config.batch_size
+    if 'mask' not in batch.keys():
+            batch['mask'] = torch.ones([batch_size])
+
+    traj_out = batch['traj_out_rotated_glob']  # batch['traj_in_rotated']
+    traj_out = traj_out[batch['mask'].bool()]
+    traj_out_end = traj_out
     # Perturb target.
     y = torch.normal(  # pylint: disable=no-member
-        mean=batch["player_future"][..., :2],
-        std=torch.ones_like(batch["player_future"][..., :2]) * noise_level,  # pylint: disable=no-member
+        mean=traj_out_end[..., :2],
+        std=torch.ones_like(traj_out_end[..., :2]) * noise_level,  # pylint: disable=no-member
     )
 
     # Forward pass from the model.
+    visual_features = batch['image_resNet+grid']
+    traj_in = batch['traj_in_rotated_glob']  # batch['traj_in_rotated']
+    traj_in = traj_out[batch['mask'].bool()]
+    traj_in = traj_in[:, 1:] - traj_in[:, :-1]
     z = model._params(
-        velocity=batch["velocity"],
-        visual_features=batch["visual_features"],
-        is_at_traffic_light=batch["is_at_traffic_light"],
-        traffic_light_state=batch["traffic_light_state"],
+        velocity=traj_in,
+        visual_features=visual_features,
+        # is_at_traffic_light=batch['action_gt'],
+        traffic_light_state=batch['action_gt'],
     )
+    # # Perturb target.
+    # y = torch.normal(  # pylint: disable=no-member
+    #     mean=batch["player_future"][..., :2],
+    #     std=torch.ones_like(batch["player_future"][..., :2]) * noise_level,  # pylint: disable=no-member
+    # )
+    #
+    # # Forward pass from the model.
+    # z = model._params(
+    #     velocity=batch["velocity"],
+    #     visual_features=batch["visual_features"],
+    #     is_at_traffic_light=batch["is_at_traffic_light"],
+    #     traffic_light_state=batch["traffic_light_state"],
+    # )
     _, log_prob, logabsdet = model._decoder._inverse(y=y, z=z)
 
     # Calculates loss (NLL).
