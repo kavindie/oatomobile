@@ -358,7 +358,4 @@ def main():
 
 
 if __name__ == "__main__":
-  flags.mark_flag_as_required("dataset_dir")
-  flags.mark_flag_as_required("output_dir")
-  flags.mark_flag_as_required("num_epochs")
-  app.run(main)
+  main()
