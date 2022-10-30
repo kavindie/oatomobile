@@ -58,7 +58,7 @@ class AutoregressiveFlow(nn.Module):
     # The output head.
     self._locscale = MLP(
         input_size=hidden_size,
-        output_sizes=[32, self._output_shape[0]],
+        output_sizes=[32, 4],#self._output_shape[0]],
         activation_fn=nn.ReLU,
         dropout_rate=None,
         activate_final=False,
