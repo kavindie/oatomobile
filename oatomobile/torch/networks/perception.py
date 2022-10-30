@@ -27,16 +27,16 @@ class MobileNetV2(nn.Module):
 
   def __init__(
       self,
-      num_classes: int,
+      num_classes: int = 128,
       in_channels: int = 3,
   ) -> None:
     """Constructs a MobileNetV2 model."""
     super(MobileNetV2, self).__init__()
 
     self._model = torch.hub.load(
-        github="pytorch/vision:v0.6.0",
-        model="mobilenet_v2",
-        num_classes=num_classes,
+        'pytorch/vision:v0.10.0',
+        'mobilenet_v2',
+        pretrained=True
     )
 
     # HACK(filangel): enables non-RGB visual features.
@@ -49,6 +49,12 @@ class MobileNetV2(nn.Module):
         padding=_tmp.padding,
         bias=_tmp.bias,
     )
+
+    self._model = torch.nn.Sequential(
+                self._model,
+                torch.nn.Linear(1000, 128),
+                torch.nn.ReLU(inplace=True)
+            )
 
   def forward(self, x: torch.Tensor) -> torch.Tensor:
     """Forward pass from the MobileNetV2."""
