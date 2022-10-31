@@ -16,7 +16,7 @@
 
 import os
 import argparse
-
+from contextlib import contextmanager
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from flomo.utils_CARLA.datasetCARLA_flomo_new import MultiMyDataset
@@ -87,7 +87,7 @@ def parse_commandline():
     parser = argparse.ArgumentParser(description='Run training motion prediction network.')
     parser.add_argument('--dataset_dir', type=str, default='/home/kavindie/Documents/Research_UTS/Python_in_ML/udmt/CARLA_Data/OutputData/Second/newdata_unique_capped.csv', help='Directory to the dataset')
     parser.add_argument('--output_dir', type=str, default='./oatomobile/baselines/torch/dim/test1', help='The full path to the output directory (for logs, ckpts).')
-    parser.add_argument('--batch_size', type=int, default=16, help="The batch size used for training the neural network.")
+    parser.add_argument('--batch_size', type=int, default=32, help="The batch size used for training the neural network.")
     parser.add_argument('--num_epochs', type=int, default=150, help="The number of training epochs for the neural network.")
     parser.add_argument('--save_model_frequency', type=int, default=20, help="The number epochs between saves of the model.")
     parser.add_argument('--learning_rate', type=float, default=1e-3, help="The ADAM learning rate")
@@ -260,16 +260,16 @@ def main():
     """Performs an epoch of gradient descent optimization on `dataloader`."""
     model.train()
     loss = 0.0
-    tt = 0
+    # tt = 0
     with tqdm.tqdm(dataloader) as pbar:
       for batch in pbar:
         # Prepares the batch.
         batch = transform(batch)
         # Performs a gradien-descent step.
         loss += train_step(model, optimizer, batch, clip=clip_gradients)
-        tt += 1
-        if tt == 20:
-            return loss/20
+        # tt += 1
+        # if tt == 20:
+        #     return loss/20
     return loss / len(dataloader)
 
   def evaluate_step(
@@ -309,7 +309,7 @@ def main():
     """Performs an evaluation of the `model` on the `dataloader."""
     model.eval()
     loss = 0.0
-    tt = 0
+    # tt = 0
     with tqdm.tqdm(dataloader) as pbar:
       for batch in pbar:
         # Prepares the batch.
@@ -317,9 +317,9 @@ def main():
         # Accumulates loss in dataset.
         with torch.no_grad():
           loss += evaluate_step(model, batch)
-        tt +=1
-        if tt == 20:
-            return loss/20
+        # tt +=1
+        # if tt == 20:
+        #     return loss/20
     return loss / len(dataloader)
 
   def write(
@@ -398,6 +398,18 @@ def main():
     # plt.savefig(f'./{epoch}.png')
     # plt.close(fig_losses)
 
+@contextmanager
+def cuda_context(cuda=None):
+    if cuda is None:
+        cuda = torch.cuda.is_available()
+    old_tensor_type = torch.cuda.FloatTensor if torch.tensor(0).is_cuda else torch.FloatTensor
+    old_generator = torch.default_generator
+    torch.set_default_tensor_type(torch.cuda.FloatTensor if cuda else torch.FloatTensor)
+    torch.default_generator = torch.Generator('cuda' if cuda else 'cpu')
+    yield
+    torch.set_default_tensor_type(old_tensor_type)
+    torch.default_generator = old_generator
 
 if __name__ == "__main__":
-  main()
+    with cuda_context():
+        main()
