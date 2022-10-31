@@ -34,55 +34,56 @@ from oatomobile.torch.networks.sequence import AutoregressiveFlow
 
 from flomo.HeatMap.UNetMod import RNNMod
 
-class ImitativeModel(nn.Module):
-  """A `PyTorch` implementation of an imitative model."""
 
-  def __init__(
-      self,
-      output_shape: types.Shape = (4, 2),
-  ) -> None:
-    """Constructs a simple imitative model.
+class ImitativeModel(nn.Module):
+    """A `PyTorch` implementation of an imitative model."""
+
+    def __init__(
+            self,
+            output_shape: types.Shape = (4, 2),
+    ) -> None:
+        """Constructs a simple imitative model.
 
     Args:
       output_shape: The shape of the base and
         data distribution (a.k.a. event_shape).
     """
-    super(ImitativeModel, self).__init__()
-    self._output_shape = output_shape
+        super(ImitativeModel, self).__init__()
+        self._output_shape = output_shape
 
-    # The convolutional encoder model.
-    self._encoder = MobileNetV2(num_classes=128, in_channels=5)
-    self._past_encoder = RNNMod(nin=2, nout=4, es=16, hs=16, nl=3, device=0)
+        # The convolutional encoder model.
+        self._encoder = MobileNetV2(num_classes=128, in_channels=5)
+        self._past_encoder = RNNMod(nin=2, nout=4, es=16, hs=16, nl=3, device=0)
 
-    # Merges the encoded features and the vector inputs.
-    self._merger = MLP(
-        input_size=128 + 4 + 2,
-        output_sizes=[64, 64, 64],
-        activation_fn=nn.ReLU,
-        dropout_rate=None,
-        activate_final=True,
-    )
+        # Merges the encoded features and the vector inputs.
+        self._merger = MLP(
+            input_size=128 + 4 + 2,
+            output_sizes=[64, 64, 64],
+            activation_fn=nn.ReLU,
+            dropout_rate=None,
+            activate_final=True,
+        )
 
-    # The decoder recurrent network used for the sequence generation.
-    self._decoder = AutoregressiveFlow(
-        output_shape=self._output_shape,
-        hidden_size=64,
-    )
+        # The decoder recurrent network used for the sequence generation.
+        self._decoder = AutoregressiveFlow(
+            output_shape=self._output_shape,
+            hidden_size=64,
+        )
 
-  def to(self, *args, **kwargs):
-    """Handles non-parameter tensors when moved to a new device."""
-    self = super().to(*args, **kwargs)
-    self._decoder = self._decoder.to(*args, **kwargs)
-    return self
+    def to(self, *args, **kwargs):
+        """Handles non-parameter tensors when moved to a new device."""
+        self = super().to(*args, **kwargs)
+        self._decoder = self._decoder.to(*args, **kwargs)
+        return self
 
-  def forward(
-      self,
-      num_steps: int,
-      goal: Optional[torch.Tensor] = None,
-      lr: float = 1e-1,
-      epsilon: float = 1.0,
-      **context: torch.Tensor) -> Union[torch.Tensor, Sequence[torch.Tensor]]:
-    """Returns a local mode from the posterior.
+    def forward(
+            self,
+            num_steps: int,
+            goal: Optional[torch.Tensor] = None,
+            lr: float = 1e-1,
+            epsilon: float = 1.0,
+            **context: torch.Tensor) -> Union[torch.Tensor, Sequence[torch.Tensor]]:
+        """Returns a local mode from the posterior.
 
     Args:
       num_steps: The number of gradient-descent steps for finding the mode.
@@ -94,62 +95,67 @@ class ImitativeModel(nn.Module):
     Returns:
       A mode from the posterior, with shape `[D, 2]`.
     """
-    batch_size = context['image_resNet+grid'].shape[0]
-    visual_features = context['image_resNet+grid'][context['mask'].bool()]
-    traj_in = context['traj_in_rotated_glob']  # batch['traj_in_rotated']
-    traj_in = traj_in[context['mask'].bool()]
-    traj_in = traj_in[:, 1:] - traj_in[:, :-1]
-    context['velocity']=traj_in
-    context['visual_features']=visual_features
-    context['traffic_light_state']=context['action_gt'][context['mask'].bool()]
 
-    # Sets initial sample to base distribution's mean.
-    x = self._decoder._base_dist.sample().clone().detach().repeat(
-        batch_size, 1).view(
+        # LET'S DO SOME PREPROCESSING
+        # testOrientation(batch)
+        visual_features = context['image_resNet+grid'][[context['mask'].bool()]]
+        traj_in = context['traj_in_rotated_glob'][context['mask'].bool()]  # batch['traj_in_rotated']
+        traj_in = traj_in - traj_in[0, -1]
+        traj_in = traj_in[:, 1:] - traj_in[:, :-1]
+
+        batch_size = visual_features.shape[0]
+
+        context['velocity'] = traj_in
+        context['visual_features'] = visual_features
+        context['traffic_light_state'] = context['action_gt'][context['mask'].bool()]
+
+        # Sets initial sample to base distribution's mean.
+        x = self._decoder._base_dist.sample().clone().detach().repeat(
+            batch_size, 1).view(
             batch_size,
             *self._output_shape,
         )
-    x.requires_grad = True
+        x.requires_grad = True
 
-    # The contextual parameters, caches for efficiency.
-    z = self._params(**context)
+        # The contextual parameters, caches for efficiency.
+        z = self._params(**context)
 
-    # Initialises a gradient-based optimiser.
-    optimizer = optim.Adam(params=[x], lr=lr)
+        # Initialises a gradient-based optimiser.
+        optimizer = optim.Adam(params=[x], lr=lr)
 
-    # Stores the best values.
-    x_best = x.clone()
-    loss_best = torch.ones(()).to(x.device) * 1000.0  # pylint: disable=no-member
-
-    for _ in range(num_steps):
-      # Resets optimizer's gradients.
-      optimizer.zero_grad()
-      # Operate on `y`-space.
-      y, _ = self._decoder._forward(x=x, z=z)
-      # Calculates imitation prior.
-      _, log_prob, logabsdet = self._decoder._inverse(y=y, z=z)
-      imitation_prior = torch.mean(log_prob - logabsdet)  # pylint: disable=no-member
-      # Calculates goal likelihodd.
-      goal_likelihood = 0.0
-      if goal is not None:
-        goal_likelihood = self._goal_likelihood(y=y, goal=goal, epsilon=epsilon)
-      loss = -(imitation_prior + goal_likelihood)
-      # Backward pass.
-      loss.backward(retain_graph=True)
-      # Performs a gradient descent step.
-      optimizer.step()
-      # Book-keeping
-      if loss < loss_best:
+        # Stores the best values.
         x_best = x.clone()
-        loss_best = loss.clone()
+        loss_best = torch.ones(()).to(x.device) * 1000.0  # pylint: disable=no-member
 
-    y, _ = self._decoder._forward(x=x_best, z=z)
+        for _ in range(num_steps):
+            # Resets optimizer's gradients.
+            optimizer.zero_grad()
+            # Operate on `y`-space.
+            y, _ = self._decoder._forward(x=x, z=z)
+            # Calculates imitation prior.
+            _, log_prob, logabsdet = self._decoder._inverse(y=y, z=z)
+            imitation_prior = torch.mean(log_prob - logabsdet)  # pylint: disable=no-member
+            # Calculates goal likelihodd.
+            goal_likelihood = 0.0
+            if goal is not None:
+                goal_likelihood = self._goal_likelihood(y=y, goal=goal, epsilon=epsilon)
+            loss = -(imitation_prior + goal_likelihood)
+            # Backward pass.
+            loss.backward(retain_graph=True)
+            # Performs a gradient descent step.
+            optimizer.step()
+            # Book-keeping
+            if loss < loss_best:
+                x_best = x.clone()
+                loss_best = loss.clone()
 
-    return y
+        y, _ = self._decoder._forward(x=x_best, z=z)
 
-  def _goal_likelihood(self, y: torch.Tensor, goal: torch.Tensor,
-                       **hyperparams) -> torch.Tensor:
-    """Returns the goal-likelihood of a plan `y`, given `goal`.
+        return y
+
+    def _goal_likelihood(self, y: torch.Tensor, goal: torch.Tensor,
+                         **hyperparams) -> torch.Tensor:
+        """Returns the goal-likelihood of a plan `y`, given `goal`.
 
     Args:
       y: A plan under evaluation, with shape `[B, T, 2]`.
@@ -159,26 +165,26 @@ class ImitativeModel(nn.Module):
     Returns:
       The log-likelihodd of the plan `y` under the `goal` distribution.
     """
-    # Parses tensor dimensions.
-    B, K, _ = goal.shape
+        # Parses tensor dimensions.
+        B, K, _ = goal.shape
 
-    # Fetches goal-likelihood hyperparameters.
-    epsilon = hyperparams.get("epsilon", 1.0)
+        # Fetches goal-likelihood hyperparameters.
+        epsilon = hyperparams.get("epsilon", 1.0)
 
-    # TODO(filangel): implement other goal likelihoods from the DIM paper
-    # Initializes the goal distribution.
-    goal_distribution = D.MixtureSameFamily(
-        mixture_distribution=D.Categorical(
-            probs=torch.ones((B, K)).to(goal.device)),  # pylint: disable=no-member
-        component_distribution=D.Independent(
-            D.Normal(loc=goal, scale=torch.ones_like(goal) * epsilon),  # pylint: disable=no-member
-            reinterpreted_batch_ndims=1,
-        ))
+        # TODO(filangel): implement other goal likelihoods from the DIM paper
+        # Initializes the goal distribution.
+        goal_distribution = D.MixtureSameFamily(
+            mixture_distribution=D.Categorical(
+                probs=torch.ones((B, K)).to(goal.device)),  # pylint: disable=no-member
+            component_distribution=D.Independent(
+                D.Normal(loc=goal, scale=torch.ones_like(goal) * epsilon),  # pylint: disable=no-member
+                reinterpreted_batch_ndims=1,
+            ))
 
-    return torch.mean(goal_distribution.log_prob(y[:, -1, :]), dim=0)  # pylint: disable=no-member
+        return torch.mean(goal_distribution.log_prob(y[:, -1, :]), dim=0)  # pylint: disable=no-member
 
-  def _params(self, **context: torch.Tensor) -> torch.Tensor:
-    """Returns the contextual parameters of the conditional density estimator.
+    def _params(self, **context: torch.Tensor) -> torch.Tensor:
+        """Returns the contextual parameters of the conditional density estimator.
 
     Args:
       visual_features: The visual input, with shape `[B, H, W, 3]`.
@@ -192,44 +198,44 @@ class ImitativeModel(nn.Module):
       The contextual parameters of the conditional density estimator.
     """
 
-    # Parses context variables.
-    if not "visual_features" in context:
-      raise ValueError("Missing `visual_features` keyword argument.")
-    if not "velocity" in context:
-      raise ValueError("Missing `velocity` keyword argument.")
-    # if not "is_at_traffic_light" in context:
-    #   raise ValueError("Missing `is_at_traffic_light` keyword argument.")
-    if not "traffic_light_state" in context:
-      raise ValueError("Missing `traffic_light_state` keyword argument.")
-    visual_features = context.get("visual_features")
-    velocity = context.get("velocity")
-    # is_at_traffic_light = context.get("is_at_traffic_light")
-    traffic_light_state = context.get("traffic_light_state")
+        # Parses context variables.
+        if not "visual_features" in context:
+            raise ValueError("Missing `visual_features` keyword argument.")
+        if not "velocity" in context:
+            raise ValueError("Missing `velocity` keyword argument.")
+        # if not "is_at_traffic_light" in context:
+        #   raise ValueError("Missing `is_at_traffic_light` keyword argument.")
+        if not "traffic_light_state" in context:
+            raise ValueError("Missing `traffic_light_state` keyword argument.")
+        visual_features = context.get("visual_features")
+        velocity = context.get("velocity")
+        # is_at_traffic_light = context.get("is_at_traffic_light")
+        traffic_light_state = context.get("traffic_light_state")
 
-    # Encodes the visual input.
-    visual_features = self._encoder(visual_features)
-    past_traj, hidden = self._past_encoder(velocity)
-    past_traj = past_traj[:, -1]
-    # Merges visual input logits and vector inputs.
-    visual_features = torch.cat(  # pylint: disable=no-member
-        tensors=[
-            visual_features,
-            past_traj,
-            traffic_light_state,
-        ],
-        dim=-1,
-    )
+        # Encodes the visual input.
+        visual_features = self._encoder(visual_features)
+        past_traj, hidden = self._past_encoder(velocity)
+        past_traj = past_traj[:, -1]
+        # Merges visual input logits and vector inputs.
+        visual_features = torch.cat(  # pylint: disable=no-member
+            tensors=[
+                visual_features,
+                past_traj,
+                traffic_light_state,
+            ],
+            dim=-1,
+        )
 
-    # The decoders initial state.
-    visual_features = self._merger(visual_features)
+        # The decoders initial state.
+        visual_features = self._merger(visual_features)
 
-    return visual_features
+        return visual_features
 
-  def transform(
-      self,
-      sample: Mapping[str, types.Array],
-  ) -> Mapping[str, torch.Tensor]:
-    """Prepares variables for the interface of the model.
+    def transform(
+            self,
+            sample: Mapping[str, types.Array],
+    ) -> Mapping[str, torch.Tensor]:
+        """Prepares variables for the interface of the model.
 
     Args:
       sample: (keyword arguments) The raw sample variables.
@@ -238,23 +244,23 @@ class ImitativeModel(nn.Module):
       The processed sample.
     """
 
-    # Preprocesses the target variables.
-    if "player_future" in sample:
-      sample["player_future"] = transforms.downsample_target(
-          player_future=sample["player_future"],
-          num_timesteps_to_keep=self._output_shape[-2],
-      )
+        # Preprocesses the target variables.
+        if "player_future" in sample:
+            sample["player_future"] = transforms.downsample_target(
+                player_future=sample["player_future"],
+                num_timesteps_to_keep=self._output_shape[-2],
+            )
 
-    # Renames `lidar` to `visual_features`.
-    if "lidar" in sample:
-      sample["visual_features"] = sample.pop("lidar")
+        # Renames `lidar` to `visual_features`.
+        if "lidar" in sample:
+            sample["visual_features"] = sample.pop("lidar")
 
-    # Preprocesses the visual features.
-    if "visual_features" in sample:
-      sample["visual_features"] = transforms.transpose_visual_features(
-          transforms.downsample_visual_features(
-              visual_features=sample["visual_features"],
-              output_shape=(100, 100),
-          ))
+        # Preprocesses the visual features.
+        if "visual_features" in sample:
+            sample["visual_features"] = transforms.transpose_visual_features(
+                transforms.downsample_visual_features(
+                    visual_features=sample["visual_features"],
+                    output_shape=(100, 100),
+                ))
 
-    return sample
+        return sample
