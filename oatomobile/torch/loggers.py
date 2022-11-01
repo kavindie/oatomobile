@@ -45,12 +45,15 @@ class TensorBoardLogger:
     # Makes sure output directories exist.
     log_dir_train = os.path.join(log_dir, "train")
     log_dir_val = os.path.join(log_dir, "val")
+    log_dir_test = os.path.join(log_dir, "test")
     os.makedirs(log_dir_train, exist_ok=True)
     os.makedirs(log_dir_val, exist_ok=True)
+    os.makedirs(log_dir_test, exist_ok=True)
 
     # Initialises the `TensorBoard` writters.
     self._summary_writter_train = SummaryWriter(log_dir=log_dir_train)
     self._summary_writter_val = SummaryWriter(log_dir=log_dir_val)
+    self._summary_writter_test = SummaryWriter(log_dir=log_dir_test)
 
   def log(
       self,
@@ -69,6 +72,8 @@ class TensorBoardLogger:
       summary_writter = self._summary_writter_train
     elif split == "val":
       summary_writter = self._summary_writter_val
+    elif split == "test":
+      summary_writter = self._summary_writter_test
     else:
       raise ValueError("Unrecognised split={} was passed".format(split))
 

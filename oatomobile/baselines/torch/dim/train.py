@@ -90,7 +90,7 @@ def parse_commandline():
     parser.add_argument('--dataset_dir', type=str,
                         default='/home/kavindie/Documents/Research_UTS/Python_in_ML/udmt/CARLA_Data/OutputData/Second/newdata_unique_capped.csv',
                         help='Directory to the dataset')
-    parser.add_argument('--output_dir', type=str, default='./oatomobile/baselines/torch/dim/test2',
+    parser.add_argument('--output_dir', type=str, default='./oatomobile/baselines/torch/dim/test3',
                         help='The full path to the output directory (for logs, ckpts).')
     parser.add_argument('--batch_size', type=int, default=128,
                         help="The batch size used for training the neural network.")
@@ -230,7 +230,6 @@ def main():
         optimizer.zero_grad()
 
         # Adding my stuff
-        batch_size = Config.batch_size
         # LET'S DO SOME PREPROCESSING
         # testOrientation(batch)
         visual_features = batch['image_resNet+grid'][[batch['mask'].bool()]]
@@ -240,8 +239,10 @@ def main():
         full_traj = full_traj - traj_in[0, -1]
         traj_in = full_traj[:, :8, :]
         traj_out = full_traj[:, 8:, :]
-        traj_in = traj_in[:, 1:] - traj_in[:, :-1]
 
+        batch_size = visual_features.shape[0]
+        velocity = (traj_out[:, 0, :] - traj_in[:,-1,:]).div(0.5) #velocity
+        velocity = torch.cat((velocity, torch.zeros(batch_size, 1)), dim=-1)
         # Perturb target.
         y = torch.normal(  # pylint: disable=no-member
             mean=traj_out[..., :2],
@@ -250,7 +251,7 @@ def main():
 
         # Forward pass from the model.
         z = model._params(
-            velocity=traj_in,
+            velocity=velocity,
             visual_features=visual_features,
             traffic_light_state=batch['action_gt'][[batch['mask'].bool()]],
         )
@@ -307,10 +308,13 @@ def main():
         full_traj = full_traj - traj_in[0, -1]
         traj_in = full_traj[:, :8, :]
         traj_out = full_traj[:, 8:, :]
-        traj_in = traj_in[:, 1:] - traj_in[:, :-1]
+
+        batch_size = visual_features.shape[0]
+        velocity = (traj_out[:, 0, :] - traj_in[:,-1,:]).div(0.5) #velocity
+        velocity = torch.cat((velocity, torch.zeros(batch_size, 1)), dim=-1)
 
         z = model._params(
-            velocity=traj_in,
+            velocity=velocity,
             visual_features=visual_features,
             traffic_light_state=batch['action_gt'][[batch['mask'].bool()]],
         )
@@ -361,20 +365,21 @@ def main():
             for params in model.parameters():
                 params.requires_grad = False
             # Generates predictions.
-            goal = batch['visible_last_point_xy_traverse_rot_globally'][batch['mask'].bool()]
-            goal = goal[:, None, :]
-            predictions = model(num_steps=20, goal=goal, **batch)
-            # Turns on gradients for model parameters.
-            for params in model.parameters():
-                params.requires_grad = True
-            # Logs on `TensorBoard`.
             vf = batch['image_resNet+grid'][batch['mask'].bool()]
             traj_in = batch['traj_in_rotated_glob'][batch['mask'].bool()]
             traj_out = batch['traj_out_rotated_glob'][batch['mask'].bool()]  # batch['traj_in_rotated']
             full_traj = torch.cat((traj_in, traj_out), dim=-2)
             full_traj = full_traj - traj_in[0, -1]
+            goal = batch['visible_last_point_xy_traverse_rot_globally'][batch['mask'].bool()]
+            goal = goal - traj_in[0, -1]
+            goal = goal[:, None, :]
             traj_in = full_traj[:, :8, :]
             gt = full_traj[:, 8:, :]
+            predictions = model(num_steps=20, goal=goal, **batch)
+            # Turns on gradients for model parameters.
+            for params in model.parameters():
+                params.requires_grad = True
+            # Logs on `TensorBoard`.
 
             writer.log(
                 split=split,
@@ -424,6 +429,8 @@ def main():
                         nll_limit,
                     ))
 
+        loss_test = evaluate_epoch(model, dataloader_test)
+        write(model, dataloader_test, writer, "test", loss_test, num_epochs+1)
 
 @contextmanager
 def cuda_context(cuda=None):

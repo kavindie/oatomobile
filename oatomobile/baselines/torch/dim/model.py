@@ -53,11 +53,10 @@ class ImitativeModel(nn.Module):
 
         # The convolutional encoder model.
         self._encoder = MobileNetV2(num_classes=128, in_channels=5)
-        self._past_encoder = RNNMod(nin=2, nout=4, es=16, hs=16, nl=3, device=0)
 
         # Merges the encoded features and the vector inputs.
         self._merger = MLP(
-            input_size=128 + 4 + 2,
+            input_size=128 + 3 + 2,
             output_sizes=[64, 64, 64],
             activation_fn=nn.ReLU,
             dropout_rate=None,
@@ -100,12 +99,21 @@ class ImitativeModel(nn.Module):
         # testOrientation(batch)
         visual_features = context['image_resNet+grid'][[context['mask'].bool()]]
         traj_in = context['traj_in_rotated_glob'][context['mask'].bool()]  # batch['traj_in_rotated']
-        traj_in = traj_in - traj_in[0, -1]
-        traj_in = traj_in[:, 1:] - traj_in[:, :-1]
+        # For online
+        # traj_in = traj_in - traj_in[0, -1]
+        # This does not work in realtime, but works offline
+
+        traj_out = context['traj_out_rotated_glob'][context['mask'].bool()]  # batch['traj_in_rotated']
+        full_traj = torch.cat((traj_in, traj_out), dim=-2)
+        full_traj = full_traj - traj_in[0, -1]
+        traj_in = full_traj[:, :8, :]
+        traj_out = full_traj[:, 8:, :]
 
         batch_size = visual_features.shape[0]
+        velocity = (traj_out[:, 0, :] - traj_in[:, -1, :]).div(0.5)  # velocity
+        velocity = torch.cat((velocity, torch.zeros(batch_size, 1)), dim=-1)
 
-        context['velocity'] = traj_in
+        context['velocity'] = velocity
         context['visual_features'] = visual_features
         context['traffic_light_state'] = context['action_gt'][context['mask'].bool()]
 
@@ -214,13 +222,11 @@ class ImitativeModel(nn.Module):
 
         # Encodes the visual input.
         visual_features = self._encoder(visual_features)
-        past_traj, hidden = self._past_encoder(velocity)
-        past_traj = past_traj[:, -1]
         # Merges visual input logits and vector inputs.
         visual_features = torch.cat(  # pylint: disable=no-member
             tensors=[
                 visual_features,
-                past_traj,
+                velocity,
                 traffic_light_state,
             ],
             dim=-1,
