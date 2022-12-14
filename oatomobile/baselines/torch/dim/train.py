@@ -77,7 +77,7 @@ class Config:
     num_samples = 20
 
     # dataset
-    dataset_dir = '../udmt/CARLA_Data/OutputData'
+    dataset_dir = '/home/student/WC/CARLA/CARLA_DATA/OutputData'
     csv_file = 'newdata_unique_capped.csv'
     sequence_length = 16  # original 20
     min_sequence_length = 10
